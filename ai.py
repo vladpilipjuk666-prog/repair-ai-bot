@@ -3,33 +3,33 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 
-from config import OPENAI_API_KEY
+from config import OPENROUTER_API_KEY
 
 
 # =========================================================
-# OPENAI CLIENT
+# OPENROUTER CLIENT
 # =========================================================
 
 client = AsyncOpenAI(
-    api_key=OPENAI_API_KEY
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
 )
 
 
 # =========================================================
-# МОДЕЛІ
+# MODEL
 # =========================================================
 
-TEXT_MODEL = "gpt-5"
-IMAGE_MODEL = "gpt-image-1"
+TEXT_MODEL = "openrouter/free"
 
 
 # =========================================================
-# СТИЛІ КАНАЛІВ
+# CHANNEL STYLES
 # =========================================================
 
 PC_REPAIR_STYLE = """
-Ти пишеш для Telegram-каналу про ремонт комп'ютерів,
-ноутбуків та іншої техніки.
+Ти пишеш для Telegram-каналу про ремонт
+комп'ютерів, ноутбуків та іншої техніки.
 
 Стиль:
 - професійний;
@@ -39,12 +39,14 @@ PC_REPAIR_STYLE = """
 - без складного технічного жаргону;
 - короткі абзаци;
 - максимум конкретики;
-- без зайвої реклами.
+- без нав'язливої реклами.
 
 Показуй:
-проблему → що зробили → результат.
 
-Пост повинен читатися приблизно за 10–15 секунд.
+проблема → що зробили → результат.
+
+Пост повинен читатися приблизно за
+10–15 секунд.
 """
 
 
@@ -62,55 +64,59 @@ WEB_DEV_STYLE = """
 - акцент на користі для клієнта.
 
 Показуй:
+
 завдання → рішення → результат.
 
-Пост повинен читатися приблизно за 10–15 секунд.
+Пост повинен читатися приблизно за
+10–15 секунд.
 """
 
 
 # =========================================================
-# ЗАГАЛЬНИЙ ПРОМПТ
+# BASE PROMPT
 # =========================================================
 
 BASE_PROMPT = """
 Ти — AI-копірайтер професійного Telegram-каналу.
 
-Твоя головна задача — перетворити сирий опис користувача
+Твоя задача — перетворити сирий опис користувача
 на короткий, красивий та зрозумілий пост.
 
-ВАЖЛИВО:
+Головне:
 
-Не пиши довго.
+Людина повинна швидко:
 
-Людина повинна:
-1. швидко зрозуміти проблему;
+1. зрозуміти проблему;
 2. побачити, що було зроблено;
 3. зрозуміти результат.
 
+НЕ ПИШИ ДОВГО.
+
 Не використовуй:
+
 - воду;
 - довгі вступи;
 - банальні фрази;
-- "ми раді повідомити";
-- "хочемо поділитися";
-- "як штучний інтелект";
+- «ми раді повідомити»;
+- «хочемо поділитися»;
+- «як штучний інтелект»;
 - надмірну рекламу;
 - багато емодзі;
 - багато хештегів.
 
 Не вигадуй факти.
 
-Якщо певної інформації немає —
+Якщо інформації немає —
 не придумуй її.
 
 Використовуй максимум 2–4 емодзі,
-і тільки якщо вони реально допомагають читанню.
+тільки якщо вони допомагають читанню.
 
 Структура:
 
-Короткий заголовок
+Короткий заголовок.
 
-Короткий опис проблеми або завдання.
+Проблема або завдання.
 
 Що зробили.
 
@@ -121,11 +127,62 @@ BASE_PROMPT = """
 Текст повинен виглядати так,
 ніби його написала реальна компанія,
 а не шаблонний AI.
+
+ПОВЕРТАЙ ТІЛЬКИ ГОТОВИЙ ТЕКСТ ПОСТА.
 """
 
 
 # =========================================================
-# СТВОРЕННЯ ПОСТА
+# HELPER
+# =========================================================
+
+async def chat(
+    prompt: str,
+    images: Optional[list[str]] = None,
+) -> str:
+
+    content = [
+        {
+            "type": "text",
+            "text": prompt,
+        }
+    ]
+
+    if images:
+
+        for image_url in images:
+
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url,
+                    },
+                }
+            )
+
+    response = await client.chat.completions.create(
+        model=TEXT_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": content,
+            }
+        ],
+    )
+
+    result = response.choices[0].message.content
+
+    if not result:
+        raise RuntimeError(
+            "AI не повернув текст."
+        )
+
+    return result.strip()
+
+
+# =========================================================
+# GENERATE POST
 # =========================================================
 
 async def generate_post(
@@ -135,24 +192,32 @@ async def generate_post(
 ) -> str:
 
     if channel == "PC REPAIR":
+
         style = PC_REPAIR_STYLE
 
     elif channel == "WEB DEV":
+
         style = WEB_DEV_STYLE
 
     else:
+
         style = ""
+
 
     image_context = ""
 
     if image_descriptions:
+
         image_context = """
 
 Користувач також надав фотографії.
 
-Ось інформація, отримана з фотографій:
+Інформація, отримана з фотографій:
 
-""" + "\n\n".join(image_descriptions)
+""" + "\n\n".join(
+            image_descriptions
+        )
+
 
     prompt = f"""
 {BASE_PROMPT}
@@ -166,20 +231,16 @@ async def generate_post(
 {image_context}
 
 Створи готовий Telegram-пост.
+
 Одразу починай з тексту поста.
 """
 
 
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=prompt,
-    )
-
-    return response.output_text.strip()
+    return await chat(prompt)
 
 
 # =========================================================
-# ПЕРЕРОБКА ПОСТА
+# REGENERATE POST
 # =========================================================
 
 async def regenerate_post(
@@ -189,9 +250,13 @@ async def regenerate_post(
 ) -> str:
 
     if channel == "PC REPAIR":
+
         style = PC_REPAIR_STYLE
+
     else:
+
         style = WEB_DEV_STYLE
+
 
     prompt = f"""
 {BASE_PROMPT}
@@ -202,37 +267,33 @@ async def regenerate_post(
 
 {description}
 
-Попередній варіант поста:
+Попередній варіант:
 
 {previous_post}
 
 Створи НОВИЙ варіант.
 
-Не просто заміни декілька слів.
+Не просто заміни кілька слів.
 
 Зміни:
+
 - подачу;
 - структуру;
 - формулювання;
 - заголовок.
 
-Але залиш головну інформацію.
+Але збережи головні факти.
 
 Новий пост повинен бути коротким,
 живим та природним.
 """
 
 
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=prompt,
-    )
-
-    return response.output_text.strip()
+    return await chat(prompt)
 
 
 # =========================================================
-# РЕДАГУВАННЯ ПОСТА ЗА КОМАНДОЮ
+# EDIT POST
 # =========================================================
 
 async def edit_post(
@@ -243,40 +304,36 @@ async def edit_post(
     prompt = f"""
 Ти — редактор Telegram-постів.
 
-Ось поточний пост:
+Поточний пост:
 
 {post}
 
-Користувач хоче:
+Побажання користувача:
 
 {instruction}
 
 Відредагуй пост відповідно до побажання.
 
-Збережи факти.
+Збережи всі факти.
 
 Не додавай вигаданих деталей.
 
 Зроби текст:
+
 - коротким;
 - красивим;
 - природним;
 - легким для читання.
 
-Поверни тільки готовий пост.
+ПОВЕРНИ ТІЛЬКИ ГОТОВИЙ ПОСТ.
 """
 
 
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=prompt,
-    )
-
-    return response.output_text.strip()
+    return await chat(prompt)
 
 
 # =========================================================
-# АНАЛІЗ ФОТО
+# ANALYZE IMAGE
 # =========================================================
 
 async def analyze_image(
@@ -284,46 +341,44 @@ async def analyze_image(
     mime_type: str = "image/jpeg",
 ) -> str:
 
-    encoded = base64.b64encode(image_bytes).decode("utf-8")
+    encoded = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
 
     image_url = (
         f"data:{mime_type};base64,{encoded}"
     )
 
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": """
-Проаналізуй це фото для Telegram-поста.
 
-Опиши тільки важливі речі:
+    prompt = """
+Проаналізуй фотографію для Telegram-поста.
+
+Опиши тільки важливе:
+
 - що зображено;
-- який стан техніки;
-- що могло бути проблемою;
+- стан техніки;
+- що видно на фотографії;
+- можливу проблему, якщо вона очевидна;
 - що можна використати для опису роботи.
 
-Не вигадуй того, чого не видно.
-""",
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": image_url,
-                    },
-                ],
-            }
-        ],
-    )
+НЕ ВИГАДУЙ того, чого не видно.
 
-    return response.output_text.strip()
+Якщо щось неможливо визначити
+з фотографії — так і скажи.
+
+Відповідь повинна бути короткою.
+"""
+
+
+    return await chat(
+        prompt,
+        images=[image_url],
+    )
 
 
 # =========================================================
-# АНАЛІЗ КІЛЬКОХ ФОТО
+# ANALYZE MULTIPLE IMAGES
 # =========================================================
 
 async def analyze_images(
@@ -353,38 +408,22 @@ async def analyze_images(
 
 
 # =========================================================
-# ГЕНЕРАЦІЯ ЗОБРАЖЕННЯ
+# IMAGE GENERATION
 # =========================================================
 
 async def generate_image(
     prompt: str,
 ) -> bytes:
 
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=prompt,
-        tools=[
-            {
-                "type": "image_generation"
-            }
-        ],
-    )
-
-    for output in response.output:
-
-        if output.type == "image_generation_call":
-
-            return base64.b64decode(
-                output.result
-            )
-
     raise RuntimeError(
-        "AI не повернув зображення."
+        "Безкоштовна генерація зображень "
+        "через OpenRouter зараз недоступна. "
+        "Функцію можна буде підключити окремо."
     )
 
 
 # =========================================================
-# AI-РЕДАГУВАННЯ ЗОБРАЖЕННЯ
+# IMAGE EDITING
 # =========================================================
 
 async def edit_image(
@@ -393,74 +432,16 @@ async def edit_image(
     mime_type: str = "image/jpeg",
 ) -> bytes:
 
-    encoded = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
-
-    image_url = (
-        f"data:{mime_type};base64,{encoded}"
-    )
-
-    prompt = f"""
-Відредагуй це зображення.
-
-Інструкція користувача:
-
-{instruction}
-
-ВАЖЛИВО:
-
-Збережи головний об'єкт фотографії.
-
-Не змінюй його без необхідності.
-
-Редагуй тільки те,
-що попросив користувач.
-
-Зображення повинно залишатися
-реалістичним та природним.
-"""
-
-
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": prompt,
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": image_url,
-                    },
-                ],
-            }
-        ],
-        tools=[
-            {
-                "type": "image_generation"
-            }
-        ],
-    )
-
-    for output in response.output:
-
-        if output.type == "image_generation_call":
-
-            return base64.b64decode(
-                output.result
-            )
-
     raise RuntimeError(
-        "AI не повернув відредаговане зображення."
+        "Безкоштовне AI-редагування зображень "
+        "зараз не підключене. "
+        "Текст та аналіз фотографій працюють "
+        "через безкоштовний AI."
     )
 
 
 # =========================================================
-# СТВОРЕННЯ "ДО / ПІСЛЯ"
+# BEFORE / AFTER
 # =========================================================
 
 async def create_before_after(
@@ -468,85 +449,7 @@ async def create_before_after(
     after_image: bytes,
 ) -> bytes:
 
-    before_encoded = base64.b64encode(
-        before_image
-    ).decode("utf-8")
-
-    after_encoded = base64.b64encode(
-        after_image
-    ).decode("utf-8")
-
-    before_url = (
-        f"data:image/jpeg;base64,{before_encoded}"
-    )
-
-    after_url = (
-        f"data:image/jpeg;base64,{after_encoded}"
-    )
-
-    prompt = """
-Створи професійне зображення
-"ДО / ПІСЛЯ" для Telegram-публікації.
-
-Використай дві фотографії:
-
-Перша — стан ДО.
-
-Друга — стан ПІСЛЯ.
-
-Зроби акуратну композицію,
-де обидва зображення добре видно.
-
-Додай прості підписи:
-
-ДО
-
-ПІСЛЯ
-
-Не змінюй саму техніку
-і не вигадуй нових деталей.
-
-Основна мета — чітко показати
-різницю між двома фотографіями.
-"""
-
-
-    response = await client.responses.create(
-        model=TEXT_MODEL,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": prompt,
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": before_url,
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": after_url,
-                    },
-                ],
-            }
-        ],
-        tools=[
-            {
-                "type": "image_generation"
-            }
-        ],
-    )
-
-    for output in response.output:
-
-        if output.type == "image_generation_call":
-
-            return base64.b64decode(
-                output.result
-            )
-
     raise RuntimeError(
-        "Не вдалося створити зображення ДО / ПІСЛЯ."
+        "AI-генерація зображення ДО / ПІСЛЯ "
+        "потребує окремої image-моделі."
     )
