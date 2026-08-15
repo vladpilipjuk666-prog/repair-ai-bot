@@ -1,0 +1,5 @@
+aiogram>=3.22,<4.0
+openai>=1.100,<2.0
+python-dotenv>=1.1,<2.0
+Pillow>=11.0,<12.0
+aiohttp>=3.12,<4.0
