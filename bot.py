@@ -1,21 +1,17 @@
 import os
-import base64
+import asyncio
 import logging
 
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-
 from openai import AsyncOpenAI
-from dotenv import load_dotenv
 
 
 # =========================================================
@@ -27,14 +23,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Поки що залишаємо назви каналів тут.
-# Пізніше підставимо твої реальні @username або ID.
-PC_REPAIR_CHANNEL = os.getenv("PC_REPAIR_CHANNEL", "@pc_repair")
-WEB_DEV_CHANNEL = os.getenv("WEB_DEV_CHANNEL", "@web_dev")
-
-# Модель AI.
-# Її можна буде змінити через змінну середовища.
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+# ID каналів.
+# Поки можна залишити порожніми.
+PC_REPAIR_CHANNEL_ID = os.getenv("PC_REPAIR_CHANNEL_ID")
+WEB_DEV_CHANNEL_ID = os.getenv("WEB_DEV_CHANNEL_ID")
 
 
 if not TELEGRAM_BOT_TOKEN:
@@ -45,47 +37,25 @@ if not OPENAI_API_KEY:
 
 
 # =========================================================
-# LOGGING
+# ІНІЦІАЛІЗАЦІЯ
 # =========================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-
-logger = logging.getLogger(__name__)
-
-
-# =========================================================
-# BOT + AI
-# =========================================================
+logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-dp = Dispatcher(storage=MemoryStorage())
-
+dp = Dispatcher()
 ai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 # =========================================================
-# СТАНИ
+# ТИМЧАСОВЕ ЗБЕРІГАННЯ ДАНИХ КОРИСТУВАЧІВ
 # =========================================================
 
-class PostCreation(StatesGroup):
-    waiting_for_channel = State()
-    waiting_for_content = State()
-    waiting_for_edit = State()
+users = {}
 
 
 # =========================================================
-# ТИМЧАСОВЕ ЗБЕРІГАННЯ ПОСТІВ
-# =========================================================
-
-user_posts = {}
-
-
-# =========================================================
-# КНОПКИ
+# КЛАВІАТУРИ
 # =========================================================
 
 def channel_keyboard():
@@ -94,12 +64,14 @@ def channel_keyboard():
             [
                 InlineKeyboardButton(
                     text="🖥 PC REPAIR",
-                    callback_data="channel_pc",
-                ),
+                    callback_data="channel_pc"
+                )
+            ],
+            [
                 InlineKeyboardButton(
-                    text="💻 WEB DEV",
-                    callback_data="channel_web",
-                ),
+                    text="🌐 WEB DEV",
+                    callback_data="channel_web"
+                )
             ],
         ]
     )
@@ -111,48 +83,17 @@ def post_keyboard():
             [
                 InlineKeyboardButton(
                     text="✅ Опублікувати",
-                    callback_data="publish_post",
-                ),
+                    callback_data="publish"
+                )
             ],
             [
                 InlineKeyboardButton(
                     text="✏️ Переробити",
-                    callback_data="edit_post",
+                    callback_data="regenerate"
                 ),
                 InlineKeyboardButton(
                     text="❌ Скасувати",
-                    callback_data="cancel_post",
-                ),
-            ],
-        ]
-    )
-
-
-def edit_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✨ Зробити коротше",
-                    callback_data="edit_short",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔥 Зробити більш продаючим",
-                    callback_data="edit_sales",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🧠 Переписати",
-                    callback_data="edit_rewrite",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Назад",
-                    callback_data="edit_back",
+                    callback_data="cancel"
                 ),
             ],
         ]
@@ -160,115 +101,99 @@ def edit_keyboard():
 
 
 # =========================================================
-# PROMPT ДЛЯ AI
+# СИСТЕМНИЙ ПРОМПТ ДЛЯ AI
 # =========================================================
 
-def build_prompt(channel: str, user_text: str) -> str:
+SYSTEM_PROMPT = """
+Ти — професійний AI-копірайтер для Telegram-каналу.
 
-    if channel == "pc":
-        brand = """
-Ти пишеш для Telegram-каналу PC REPAIR.
+Твоє завдання — перетворювати короткий опис користувача
+на красивий, сучасний і дуже зрозумілий Telegram-пост.
 
-Тематика:
-- ремонт ноутбуків і ПК;
-- діагностика;
-- чистка;
-- Windows;
-- комплектуючі;
-- оптимізація;
-- відновлення техніки.
-"""
+ГОЛОВНІ ПРАВИЛА:
 
-    else:
-        brand = """
-Ти пишеш для Telegram-каналу WEB DEV.
-
-Тематика:
-- створення сайтів;
-- веброзробка;
-- автоматизація;
-- боти;
-- програмування;
-- IT-рішення для бізнесу.
-"""
-
-    return f"""
-{brand}
-
-Твоє завдання — перетворити повідомлення клієнта/майстра
-на готовий Telegram-пост.
-
-ГОЛОВНЕ:
-
-1. Пост має читатися дуже легко.
-2. Людина повинна зрозуміти суть буквально за кілька секунд.
-3. Не пиши величезні полотна тексту.
-4. Прибирай зайву воду.
-5. Використовуй короткі абзаци.
-6. Можна використовувати емодзі, але помірно.
-7. Не вигадуй фактів, яких немає у вихідному тексті.
-8. Не використовуй надмірно рекламний стиль.
-9. Текст має звучати природно, ніби його написав реальний майстер.
-10. Якщо є проблема → коротко покажи проблему.
-11. Якщо є виконана робота → покажи, що саме зробили.
-12. Якщо є результат → обов'язково покажи результат.
-13. Якщо доречно — додай короткий заклик звернутися.
-14. Не використовуй фрази типу "ми найкращі", "професіонали своєї справи"
-    без конкретного підтвердження.
-15. Не повторюй інформацію.
+1. Не пиши довгі тексти.
+2. Людина повинна зрозуміти головну думку за кілька секунд.
+3. Не використовуй воду.
+4. Не повторюй одну думку декілька разів.
+5. Текст має виглядати живим, а не шаблонним.
+6. Використовуй короткі абзаци.
+7. Використовуй емодзі тільки там, де вони реально допомагають.
+8. Не став багато емодзі.
+9. Не використовуй надмірну кількість хештегів.
+10. Тон — спокійний, впевнений, професійний і дружній.
+11. Не вигадуй факти, яких немає в описі.
+12. Якщо користувач описує ремонт — покажи проблему та результат.
+13. Якщо користувач описує розробку сайту — покажи, що було зроблено
+    та яку користь це дає.
+14. Головне — увага людини та легкість читання.
 
 СТРУКТУРА:
 
-🛠 Короткий заголовок
+Короткий заголовок.
 
-1–2 речення про проблему.
+1–2 короткі речення про проблему або завдання.
 
-Що зробили:
-• пункт
-• пункт
-• пункт
+Що було зроблено.
 
-✅ Результат:
-короткий результат.
+Короткий результат.
 
-📩 Якщо потрібна допомога — напиши нам.
+За можливості — короткий заклик звернутися.
 
-Але структура НЕ повинна бути жорстким шаблоном.
-Якщо для конкретного поста якась частина не потрібна — прибери її.
+Не пиши слова:
+"Звичайно", "Радий допомогти", "Ось ваш пост",
+"Як штучний інтелект".
 
-Дуже важливо:
-пост повинен бути коротким, красивим і зручним для читання
-з телефона.
-
-Ось інформація від користувача:
-
-{user_text}
-
-Поверни ТІЛЬКИ готовий текст поста.
-Без пояснень.
+Одразу пиши готовий пост.
 """
 
 
 # =========================================================
-# ГЕНЕРАЦІЯ ТЕКСТУ
+# ГЕНЕРАЦІЯ ПОСТА
 # =========================================================
 
-async def generate_post(channel: str, user_text: str) -> str:
+async def generate_post(description: str, channel: str) -> str:
 
-    prompt = build_prompt(channel, user_text)
+    channel_context = ""
 
-    response = await ai.responses.create(
-        model=OPENAI_MODEL,
-        instructions=(
-            "Ти — AI-контент менеджер Telegram-каналу. "
-            "Пиши українською мовою. "
-            "Твоя головна мета — ясність, короткість і природність."
-        ),
-        input=prompt,
-        max_output_tokens=1000,
+    if channel == "PC REPAIR":
+        channel_context = """
+Тематика каналу: ремонт комп'ютерів та ноутбуків.
+Пиши зрозуміло навіть для людини, яка не розбирається в техніці.
+"""
+
+    elif channel == "WEB DEV":
+        channel_context = """
+Тематика каналу: створення сайтів та веб-розробка.
+Пояснюй користь простою мовою, без зайвого технічного жаргону.
+"""
+
+    prompt = f"""
+{channel_context}
+
+Опис від користувача:
+
+{description}
+
+Створи готовий Telegram-пост.
+"""
+
+    response = await ai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0.8,
     )
 
-    return response.output_text.strip()
+    return response.choices[0].message.content.strip()
 
 
 # =========================================================
@@ -276,126 +201,22 @@ async def generate_post(channel: str, user_text: str) -> str:
 # =========================================================
 
 @dp.message(CommandStart())
-async def start_handler(message: Message, state: FSMContext):
+async def start_handler(message: Message):
 
-    await state.clear()
-
-    await message.answer(
-        "Привіт! 👋\n\n"
-        "Я допоможу швидко створити готовий пост "
-        "для твого Telegram-каналу.\n\n"
-        "Можеш надіслати:\n"
-        "• текст\n"
-        "• фото\n"
-        "• фото до/після\n"
-        "• опис виконаної роботи\n\n"
-        "Спочатку вибери канал:",
-        reply_markup=channel_keyboard(),
-    )
-
-    await state.set_state(PostCreation.waiting_for_channel)
-
-
-# =========================================================
-# ВИБІР PC REPAIR
-# =========================================================
-
-@dp.callback_query(
-    PostCreation.waiting_for_channel,
-    F.data == "channel_pc",
-)
-async def select_pc(callback: CallbackQuery, state: FSMContext):
-
-    await callback.answer()
-
-    await state.update_data(channel="pc")
-
-    await callback.message.edit_text(
-        "🖥 Обрано <b>PC REPAIR</b>.\n\n"
-        "Тепер надішли мені опис роботи.\n\n"
-        "Наприклад:\n"
-        "«Клієнт приніс ноутбук Lenovo, "
-        "який сильно грівся. Почистив систему охолодження, "
-        "замінив термопасту та зробив оптимізацію.»\n\n"
-        "Можеш також одразу прикріпити фото.",
-        parse_mode="HTML",
-    )
-
-    await state.set_state(PostCreation.waiting_for_content)
-
-
-# =========================================================
-# ВИБІР WEB DEV
-# =========================================================
-
-@dp.callback_query(
-    PostCreation.waiting_for_channel,
-    F.data == "channel_web",
-)
-async def select_web(callback: CallbackQuery, state: FSMContext):
-
-    await callback.answer()
-
-    await state.update_data(channel="web")
-
-    await callback.message.edit_text(
-        "💻 Обрано <b>WEB DEV</b>.\n\n"
-        "Тепер надішли інформацію про роботу.\n\n"
-        "Можеш надіслати текст, фото або все разом.",
-        parse_mode="HTML",
-    )
-
-    await state.set_state(PostCreation.waiting_for_content)
-
-
-# =========================================================
-# ОТРИМАННЯ ТЕКСТУ
-# =========================================================
-
-@dp.message(
-    PostCreation.waiting_for_content,
-    F.text,
-)
-async def receive_text(message: Message, state: FSMContext):
-
-    data = await state.get_data()
-
-    channel = data.get("channel")
-
-    user_text = message.text
-
-    await message.answer("✍️ Пишу чернетку...")
-
-    try:
-
-        post = await generate_post(
-            channel=channel,
-            user_text=user_text,
-        )
-
-    except Exception as error:
-
-        logger.exception("Помилка генерації: %s", error)
-
-        await message.answer(
-            "❌ Не вдалося створити пост.\n"
-            "Перевір API-ключ і спробуй ще раз."
-        )
-
-        return
-
-    user_posts[message.from_user.id] = {
-        "channel": channel,
-        "text": user_text,
-        "post": post,
-        "photos": [],
+    users[message.from_user.id] = {
+        "channel": None,
+        "description": None,
+        "post": None,
+        "photo_id": None,
     }
 
     await message.answer(
-        "📝 <b>Чернетка:</b>\n\n"
-        + post,
-        parse_mode="HTML",
-        reply_markup=post_keyboard(),
+        "👋 Привіт!\n\n"
+        "Я AI-помічник для створення Telegram-постів.\n\n"
+        "Надішли мені коротко, що сталося або що ти зробив.\n\n"
+        "Наприклад:\n"
+        "«Ремонтував Lenovo, перегрівався процесор, "
+        "почистив систему охолодження»"
     )
 
 
@@ -403,338 +224,357 @@ async def receive_text(message: Message, state: FSMContext):
 # ОТРИМАННЯ ФОТО
 # =========================================================
 
-@dp.message(
-    PostCreation.waiting_for_content,
-    F.photo,
-)
-async def receive_photo(message: Message, state: FSMContext):
+@dp.message(F.photo)
+async def photo_handler(message: Message):
 
-    data = await state.get_data()
+    user_id = message.from_user.id
 
-    channel = data.get("channel")
+    if user_id not in users:
+        users[user_id] = {
+            "channel": None,
+            "description": None,
+            "post": None,
+            "photo_id": None,
+        }
 
-    photo = message.photo[-1]
+    # Запам'ятовуємо найбільшу версію фото
+    users[user_id]["photo_id"] = message.photo[-1].file_id
 
-    file = await bot.get_file(photo.file_id)
+    caption = message.caption
 
-    downloaded = await bot.download_file(file.file_path)
-
-    image_bytes = downloaded.read()
-
-    encoded = base64.b64encode(image_bytes).decode("utf-8")
-
-    user_text = message.caption or "Користувач надіслав фотографію."
+    if caption:
+        users[user_id]["description"] = caption
 
     await message.answer(
-        "📸 Фото отримав.\n"
-        "✨ Аналізую інформацію та готую пост..."
+        "📸 Фото отримав!\n\n"
+        "Тепер вибери, для якого каналу створюємо пост:",
+        reply_markup=channel_keyboard()
     )
 
-    try:
 
-        response = await ai.responses.create(
-            model=OPENAI_MODEL,
-            instructions=(
-                "Проаналізуй фотографію та текст користувача. "
-                "Підготуй короткий, природний Telegram-пост "
-                "українською мовою. "
-                "Не вигадуй того, чого не видно або не сказано."
-            ),
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": build_prompt(channel, user_text),
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": (
-                                f"data:image/jpeg;base64,{encoded}"
-                            ),
-                        },
-                    ],
-                }
-            ],
-            max_output_tokens=1000,
-        )
+# =========================================================
+# ОТРИМАННЯ ТЕКСТУ
+# =========================================================
 
-        post = response.output_text.strip()
+@dp.message(F.text)
+async def text_handler(message: Message):
 
-    except Exception as error:
+    user_id = message.from_user.id
 
-        logger.exception("Помилка аналізу фото: %s", error)
+    if user_id not in users:
+        users[user_id] = {
+            "channel": None,
+            "description": None,
+            "post": None,
+            "photo_id": None,
+        }
 
-        await message.answer(
-            "❌ Не вдалося обробити фотографію."
-        )
-
+    # Не обробляємо команди
+    if message.text.startswith("/"):
         return
 
-    user_posts[message.from_user.id] = {
-        "channel": channel,
-        "text": user_text,
-        "post": post,
-        "photos": [photo.file_id],
-    }
+    users[user_id]["description"] = message.text
 
     await message.answer(
-        "📝 <b>Чернетка:</b>\n\n"
-        + post,
-        parse_mode="HTML",
-        reply_markup=post_keyboard(),
+        "👍 Опис отримав.\n\n"
+        "Для якого каналу створюємо пост?",
+        reply_markup=channel_keyboard()
     )
 
 
 # =========================================================
-# ОПУБЛІКУВАТИ
+# PC REPAIR
 # =========================================================
 
-@dp.callback_query(F.data == "publish_post")
-async def publish_post(callback: CallbackQuery):
-
-    await callback.answer()
+@dp.callback_query(F.data == "channel_pc")
+async def choose_pc_channel(callback: CallbackQuery):
 
     user_id = callback.from_user.id
 
-    post_data = user_posts.get(user_id)
+    users[user_id]["channel"] = "PC REPAIR"
 
-    if not post_data:
+    await callback.message.edit_text(
+        "🖥 Канал: PC REPAIR\n\n"
+        "⏳ Створюю короткий пост..."
+    )
 
-        await callback.message.answer(
-            "❌ Чернетку не знайдено. Створи новий пост."
+    try:
+        post = await generate_post(
+            users[user_id]["description"],
+            "PC REPAIR"
         )
 
+        users[user_id]["post"] = post
+
+        photo_id = users[user_id].get("photo_id")
+
+        if photo_id:
+            await callback.message.delete()
+
+            await bot.send_photo(
+                chat_id=callback.message.chat.id,
+                photo=photo_id,
+                caption=post,
+                reply_markup=post_keyboard()
+            )
+        else:
+            await callback.message.edit_text(
+                post,
+                reply_markup=post_keyboard()
+            )
+
+    except Exception as e:
+
+        logging.exception(e)
+
+        await callback.message.edit_text(
+            "❌ Не вдалося створити пост.\n\n"
+            "Перевір налаштування OpenAI API."
+        )
+
+    await callback.answer()
+
+
+# =========================================================
+# WEB DEV
+# =========================================================
+
+@dp.callback_query(F.data == "channel_web")
+async def choose_web_channel(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    users[user_id]["channel"] = "WEB DEV"
+
+    await callback.message.edit_text(
+        "🌐 Канал: WEB DEV\n\n"
+        "⏳ Створюю короткий пост..."
+    )
+
+    try:
+        post = await generate_post(
+            users[user_id]["description"],
+            "WEB DEV"
+        )
+
+        users[user_id]["post"] = post
+
+        photo_id = users[user_id].get("photo_id")
+
+        if photo_id:
+            await callback.message.delete()
+
+            await bot.send_photo(
+                chat_id=callback.message.chat.id,
+                photo=photo_id,
+                caption=post,
+                reply_markup=post_keyboard()
+            )
+        else:
+            await callback.message.edit_text(
+                post,
+                reply_markup=post_keyboard()
+            )
+
+    except Exception as e:
+
+        logging.exception(e)
+
+        await callback.message.edit_text(
+            "❌ Не вдалося створити пост.\n\n"
+            "Перевір налаштування OpenAI API."
+        )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПЕРЕГЕНЕРАЦІЯ
+# =========================================================
+
+@dp.callback_query(F.data == "regenerate")
+async def regenerate_handler(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    data = users.get(user_id)
+
+    if not data or not data.get("description"):
+        await callback.answer(
+            "Немає даних для перегенерації.",
+            show_alert=True
+        )
         return
 
-    channel = post_data["channel"]
-    text = post_data["post"]
-    photos = post_data.get("photos", [])
-
-    if channel == "pc":
-        target_channel = PC_REPAIR_CHANNEL
-    else:
-        target_channel = WEB_DEV_CHANNEL
+    await callback.answer("Переробляю...")
 
     try:
 
-        if photos:
+        post = await generate_post(
+            data["description"],
+            data["channel"]
+        )
+
+        data["post"] = post
+
+        photo_id = data.get("photo_id")
+
+        if photo_id:
+
+            await callback.message.delete()
 
             await bot.send_photo(
-                chat_id=target_channel,
-                photo=photos[0],
-                caption=text,
+                chat_id=callback.message.chat.id,
+                photo=photo_id,
+                caption=post,
+                reply_markup=post_keyboard()
             )
 
         else:
 
-            await bot.send_message(
-                chat_id=target_channel,
-                text=text,
+            await callback.message.edit_text(
+                post,
+                reply_markup=post_keyboard()
             )
 
-    except Exception as error:
+    except Exception:
 
-        logger.exception("Помилка публікації: %s", error)
-
-        await callback.message.answer(
-            "❌ Не вдалося опублікувати пост.\n\n"
-            "Перевір, чи доданий бот адміністратором "
-            "у потрібний канал і чи має право публікувати."
-        )
-
-        return
-
-    await callback.message.edit_reply_markup(
-        reply_markup=None
-    )
-
-    await callback.message.answer(
-        "✅ Пост успішно опубліковано!"
-    )
-
-    user_posts.pop(user_id, None)
-
-
-# =========================================================
-# ПЕРЕРОБКА
-# =========================================================
-
-@dp.callback_query(F.data == "edit_post")
-async def edit_post(callback: CallbackQuery):
-
-    await callback.answer()
-
-    await callback.message.answer(
-        "✏️ Як хочеш змінити пост?",
-        reply_markup=edit_keyboard(),
-    )
-
-
-# =========================================================
-# КОРОТШЕ
-# =========================================================
-
-@dp.callback_query(F.data == "edit_short")
-async def edit_short(callback: CallbackQuery):
-
-    await callback.answer()
-
-    await regenerate_post(
-        callback,
-        "Зроби цей пост значно коротшим. "
-        "Залиши тільки найважливішу інформацію."
-    )
-
-
-# =========================================================
-# ПРОДАЮЧІШЕ
-# =========================================================
-
-@dp.callback_query(F.data == "edit_sales")
-async def edit_sales(callback: CallbackQuery):
-
-    await callback.answer()
-
-    await regenerate_post(
-        callback,
-        "Зроби пост більш цікавим для потенційного клієнта, "
-        "але без нав'язливої реклами."
-    )
-
-
-# =========================================================
-# ПЕРЕПИСАТИ
-# =========================================================
-
-@dp.callback_query(F.data == "edit_rewrite")
-async def edit_rewrite(callback: CallbackQuery):
-
-    await callback.answer()
-
-    await regenerate_post(
-        callback,
-        "Повністю перепиши пост іншими словами. "
-        "Збережи факти та зроби текст природним."
-    )
-
-
-# =========================================================
-# AI ПЕРЕГЕНЕРАЦІЯ
-# =========================================================
-
-async def regenerate_post(
-    callback: CallbackQuery,
-    instruction: str,
-):
-
-    user_id = callback.from_user.id
-
-    post_data = user_posts.get(user_id)
-
-    if not post_data:
+        logging.exception("Помилка генерації")
 
         await callback.message.answer(
-            "❌ Чернетку не знайдено."
+            "❌ Не вдалося перегенерувати пост."
         )
-
-        return
-
-    await callback.message.answer(
-        "✨ Переробляю..."
-    )
-
-    channel = post_data["channel"]
-    original_text = post_data["text"]
-    current_post = post_data["post"]
-
-    prompt = f"""
-Перероби цей Telegram-пост.
-
-Вихідна інформація:
-{original_text}
-
-Поточний пост:
-{current_post}
-
-Додаткова інструкція:
-{instruction}
-
-Зроби результат коротким, зрозумілим і приємним
-для читання з телефона.
-
-Не вигадуй нових фактів.
-
-Поверни тільки готовий текст.
-"""
-
-    try:
-
-        response = await ai.responses.create(
-            model=OPENAI_MODEL,
-            instructions=(
-                "Ти професійний редактор коротких Telegram-постів."
-            ),
-            input=prompt,
-            max_output_tokens=1000,
-        )
-
-        new_post = response.output_text.strip()
-
-    except Exception as error:
-
-        logger.exception("Помилка редагування: %s", error)
-
-        await callback.message.answer(
-            "❌ Не вдалося переробити пост."
-        )
-
-        return
-
-    user_posts[user_id]["post"] = new_post
-
-    await callback.message.answer(
-        "📝 <b>Оновлена чернетка:</b>\n\n"
-        + new_post,
-        parse_mode="HTML",
-        reply_markup=post_keyboard(),
-    )
 
 
 # =========================================================
 # СКАСУВАННЯ
 # =========================================================
 
-@dp.callback_query(F.data == "cancel_post")
-async def cancel_post(callback: CallbackQuery):
+@dp.callback_query(F.data == "cancel")
+async def cancel_handler(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    if user_id in users:
+        users[user_id]["post"] = None
+        users[user_id]["photo_id"] = None
+
+    await callback.message.edit_text(
+        "❌ Створення поста скасовано.\n\n"
+        "Можеш надіслати новий опис."
+    )
 
     await callback.answer()
 
-    user_posts.pop(callback.from_user.id, None)
 
-    await callback.message.edit_reply_markup(
-        reply_markup=None
-    )
+# =========================================================
+# ПУБЛІКАЦІЯ
+# =========================================================
 
-    await callback.message.answer(
-        "❌ Чернетку скасовано.\n\n"
-        "Можеш створити новий пост через /start."
+@dp.callback_query(F.data == "publish")
+async def publish_handler(callback: CallbackQuery):
+
+    user_id = callback.from_user.id
+
+    data = users.get(user_id)
+
+    if not data or not data.get("post"):
+        await callback.answer(
+            "Пост не знайдено.",
+            show_alert=True
+        )
+        return
+
+    channel = data.get("channel")
+    post = data.get("post")
+    photo_id = data.get("photo_id")
+
+    if channel == "PC REPAIR":
+        channel_id = PC_REPAIR_CHANNEL_ID
+
+    elif channel == "WEB DEV":
+        channel_id = WEB_DEV_CHANNEL_ID
+
+    else:
+        channel_id = None
+
+    if not channel_id:
+
+        await callback.answer(
+            "Канал ще не налаштований.",
+            show_alert=True
+        )
+
+        await callback.message.answer(
+            "⚠️ Публікація поки не налаштована.\n\n"
+            "Пізніше додамо ID каналів у налаштування."
+        )
+
+        return
+
+    try:
+
+        if photo_id:
+
+            await bot.send_photo(
+                chat_id=channel_id,
+                photo=photo_id,
+                caption=post
+            )
+
+        else:
+
+            await bot.send_message(
+                chat_id=channel_id,
+                text=post
+            )
+
+        await callback.message.edit_reply_markup(
+            reply_markup=None
+        )
+
+        await callback.message.answer(
+            "✅ Пост опубліковано!"
+        )
+
+        await callback.answer()
+
+    except Exception as e:
+
+        logging.exception(e)
+
+        await callback.answer(
+            "Помилка публікації.",
+            show_alert=True
+        )
+
+
+# =========================================================
+# /CANCEL
+# =========================================================
+
+@dp.message(Command("cancel"))
+async def command_cancel(message: Message):
+
+    user_id = message.from_user.id
+
+    users.pop(user_id, None)
+
+    await message.answer(
+        "❌ Поточне створення скасовано."
     )
 
 
 # =========================================================
-# ЗАПУСК
+# ЗАПУСК БОТА
 # =========================================================
 
 async def main():
 
-    logger.info("Бот запускається...")
+    print("🤖 AI Telegram Bot запущено!")
 
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())
