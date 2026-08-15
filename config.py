@@ -20,11 +20,11 @@ TELEGRAM_BOT_TOKEN = os.getenv(
 
 
 # =========================================================
-# OPENAI
+# OPENROUTER
 # =========================================================
 
-OPENAI_API_KEY = os.getenv(
-    "OPENAI_API_KEY"
+OPENROUTER_API_KEY = os.getenv(
+    "OPENROUTER_API_KEY"
 )
 
 
@@ -55,27 +55,45 @@ OWNER_ID = os.getenv(
 # =========================================================
 
 def validate_config():
+
     missing = []
 
+
+    # Telegram
+
     if not TELEGRAM_BOT_TOKEN:
+
         missing.append(
             "TELEGRAM_BOT_TOKEN"
         )
 
-    if not OPENAI_API_KEY:
+
+    # OpenRouter
+
+    if not OPENROUTER_API_KEY:
+
         missing.append(
-            "OPENAI_API_KEY"
+            "OPENROUTER_API_KEY"
         )
 
+
+    # PC Repair channel
+
     if not PC_REPAIR_CHANNEL_ID:
+
         missing.append(
             "PC_REPAIR_CHANNEL_ID"
         )
 
+
+    # Web Dev channel
+
     if not WEB_DEV_CHANNEL_ID:
+
         missing.append(
             "WEB_DEV_CHANNEL_ID"
         )
+
 
     if missing:
 
