@@ -19,7 +19,7 @@ client = AsyncOpenAI(
 # МОДЕЛІ
 # =========================================================
 
-TEXT_MODEL = "gpt-5.6"
+TEXT_MODEL = "gpt-5"
 IMAGE_MODEL = "gpt-image-1"
 
 
