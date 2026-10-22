@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: pilipuk-repair-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: BOT_TOKEN
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: AI_MODEL
+        value: openrouter/free
+      - key: AI_TIMEOUT_SECONDS
+        value: "45"
+      - key: CONTACT_NAME
+        value: Pilipuk Repair
+      - key: CONTACT_USERNAME
+        value: pilipuk_repair
+      - key: SERVICE_CITY
+        value: Київ
+      - key: WORK_HOURS
+        value: Пн–Сб, 10:00–19:00
+      - key: MAX_ACTIVE_REQUESTS
+        value: "3"
+      - key: MAX_PHOTOS
+        value: "5"
+      - key: LOG_LEVEL
+        value: INFO
